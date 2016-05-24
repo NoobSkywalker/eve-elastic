@@ -145,7 +145,6 @@ def get_es(url, **kwargs):
     :param url: elasticsearch url
     """
     es = elasticsearch.Elasticsearch([url], **kwargs)
-    logger.info("Converting")
     es.transport.serializer = ElasticJSONSerializer()
     return es
 
@@ -309,8 +308,6 @@ class Elastic(DataLayer):
     def find(self, resource, req, sub_resource_lookup):
         args = getattr(req, 'args', request.args if request else {}) or {}
         source_config = config.SOURCES[resource]
-        logger.info(req)
-        logger.info(args)
         if args.get('source'):
             query = json.loads(args.get('source'))
             if 'filtered' not in query.get('query', {}):
@@ -325,7 +322,6 @@ class Elastic(DataLayer):
             query['query']['filtered']['query'] = _build_query_string(args.get('q'),
                                                                       default_field=args.get('df', '_all'),
                                                                       default_operator=args.get('default_operator', 'OR'))
-        logger.info(query)
         if 'sort' not in query:
             if req.sort:
                 sort = ast.literal_eval(req.sort)
@@ -377,7 +373,6 @@ class Elastic(DataLayer):
             return hit.get('found', False)
 
         args = self._es_args(resource)
-        logger.info(args)
         if config.ID_FIELD in lookup:
             logger.info("config in lookup")
             logger.info(lookup[config.ID_FIELD])
@@ -392,17 +387,14 @@ class Elastic(DataLayer):
                 return
 
             docs = self._parse_hits({'hits': {'hits': [hit]}}, resource)
-            logger.info(docs.first())
+
             return docs.first()
         else:
             if len(lookup) > 1:
                 terms = [{'term': {key: value}} for key, value in lookup.items()]
-                logger.info(terms)
                 query = {'query': {'filtered': {'filter': {'bool': {'must': terms}}}}}
-                logger.info(query)
             else:
                 query = {'query': {'term': lookup}}
-                logger.info(query)
             try:
                 args['size'] = 1
                 hits = self.es.search(body=query, **args)

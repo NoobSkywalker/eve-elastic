@@ -9,10 +9,10 @@ from bson import ObjectId
 from elasticsearch.helpers import bulk
 
 from flask import request, current_app
+from flask.ext.pymongo import PyMongo
 from eve.utils import config
 from eve.io.base import DataLayer
 from uuid import uuid4
-
 
 logger = logging.getLogger('elastic')
 
@@ -33,8 +33,9 @@ def get_dates(schema):
     """Return list of datetime fields for given schema."""
     dates = [config.LAST_UPDATED, config.DATE_CREATED]
     for field, field_schema in schema.items():
-        if field_schema['type'] == 'datetime':
-            dates.append(field)
+        if 'type' in field_schema:
+            if field_schema['type'] == 'datetime':
+                dates.append(field)
     return dates
 
 
@@ -306,7 +307,6 @@ class Elastic(DataLayer):
     def find(self, resource, req, sub_resource_lookup):
         args = getattr(req, 'args', request.args if request else {}) or {}
         source_config = config.SOURCES[resource]
-
         if args.get('source'):
             query = json.loads(args.get('source'))
             if 'filtered' not in query.get('query', {}):
@@ -321,7 +321,6 @@ class Elastic(DataLayer):
             query['query']['filtered']['query'] = _build_query_string(args.get('q'),
                                                                       default_field=args.get('df', '_all'),
                                                                       default_operator=args.get('default_operator', 'OR'))
-
         if 'sort' not in query:
             if req.sort:
                 sort = ast.literal_eval(req.sort)
@@ -373,7 +372,6 @@ class Elastic(DataLayer):
             return hit.get('found', False)
 
         args = self._es_args(resource)
-
         if config.ID_FIELD in lookup:
             try:
                 hit = self.es.get(id=lookup[config.ID_FIELD], **args)
@@ -384,6 +382,7 @@ class Elastic(DataLayer):
                 return
 
             docs = self._parse_hits({'hits': {'hits': [hit]}}, resource)
+
             return docs.first()
         else:
             if len(lookup) > 1:
@@ -391,7 +390,6 @@ class Elastic(DataLayer):
                 query = {'query': {'filtered': {'filter': {'bool': {'must': terms}}}}}
             else:
                 query = {'query': {'term': lookup}}
-
             try:
                 args['size'] = 1
                 hits = self.es.search(body=query, **args)
@@ -413,8 +411,8 @@ class Elastic(DataLayer):
         ids = []
         kwargs.update(self._es_args(resource))
         for doc in doc_or_docs:
-            res = self.es.index(body=doc, id=doc.get('_id'), **kwargs)
-            ids.append(res.get('_id', doc.get('_id')))
+            res = self.es.index(body=doc, id=ObjectId(doc.get('_id')), **kwargs)
+            ids.append(res.get('_id', ObjectId(doc.get('_id'))))
         self._refresh_resource_index(resource)
         return ids
 

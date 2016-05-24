@@ -176,7 +176,6 @@ class Elastic(DataLayer):
 
         self.index = app.config['ELASTICSEARCH_INDEX']
         self.es = get_es(app.config['ELASTICSEARCH_URL'], **self.kwargs)
-        self.elastic = PyElastic(self)
 
         if not self.kwargs.get('skip_index_init'):
             self.init_index(app)
@@ -374,16 +373,12 @@ class Elastic(DataLayer):
 
         args = self._es_args(resource)
         if config.ID_FIELD in lookup:
-            logger.info("config in lookup")
-            logger.info(lookup[config.ID_FIELD])
             try:
                 hit = self.es.get(id=lookup[config.ID_FIELD], **args)
             except elasticsearch.NotFoundError:
-                logger.info("not found")
                 return
 
             if not is_found(hit):
-                logger.info("not found")
                 return
 
             docs = self._parse_hits({'hits': {'hits': [hit]}}, resource)
@@ -607,12 +602,3 @@ def _build_query_string(q, default_field=None, default_operator='AND'):
         query['query_string'].update({'lenient': False} if default_field else {'default_field': default_field})
 
     return query
-
-class PyElastic(dict):
-    """ Cache for Elasticsearch instances. It is just a normal dict which exposes
-    a 'db' property for backward compatibility.
-    .. versionadded:: 0.6
-    """
-    def __init__(self, elastic, *args):
-        self.elastic = elastic
-        dict.__init__(self, args)

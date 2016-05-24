@@ -9,10 +9,10 @@ from bson import ObjectId
 from elasticsearch.helpers import bulk
 
 from flask import request, current_app
+from flask.ext.pymongo import PyMongo
 from eve.utils import config
 from eve.io.base import DataLayer
 from uuid import uuid4
-
 
 logger = logging.getLogger('elastic')
 
@@ -33,8 +33,9 @@ def get_dates(schema):
     """Return list of datetime fields for given schema."""
     dates = [config.LAST_UPDATED, config.DATE_CREATED]
     for field, field_schema in schema.items():
-        if field_schema['type'] == 'datetime':
-            dates.append(field)
+        if 'type' in field_schema:
+            if field_schema['type'] == 'datetime':
+                dates.append(field)
     return dates
 
 
@@ -144,6 +145,7 @@ def get_es(url, **kwargs):
     :param url: elasticsearch url
     """
     es = elasticsearch.Elasticsearch([url], **kwargs)
+    logger.info("Converting")
     es.transport.serializer = ElasticJSONSerializer()
     return es
 
@@ -175,6 +177,7 @@ class Elastic(DataLayer):
 
         self.index = app.config['ELASTICSEARCH_INDEX']
         self.es = get_es(app.config['ELASTICSEARCH_URL'], **self.kwargs)
+        self.elastic = PyElastic(self)
 
         if not self.kwargs.get('skip_index_init'):
             self.init_index(app)
@@ -306,7 +309,8 @@ class Elastic(DataLayer):
     def find(self, resource, req, sub_resource_lookup):
         args = getattr(req, 'args', request.args if request else {}) or {}
         source_config = config.SOURCES[resource]
-
+        logger.info(req)
+        logger.info(args)
         if args.get('source'):
             query = json.loads(args.get('source'))
             if 'filtered' not in query.get('query', {}):
@@ -321,7 +325,7 @@ class Elastic(DataLayer):
             query['query']['filtered']['query'] = _build_query_string(args.get('q'),
                                                                       default_field=args.get('df', '_all'),
                                                                       default_operator=args.get('default_operator', 'OR'))
-
+        logger.info(query)
         if 'sort' not in query:
             if req.sort:
                 sort = ast.literal_eval(req.sort)
@@ -373,25 +377,32 @@ class Elastic(DataLayer):
             return hit.get('found', False)
 
         args = self._es_args(resource)
-
+        logger.info(args)
         if config.ID_FIELD in lookup:
+            logger.info("config in lookup")
+            logger.info(lookup[config.ID_FIELD])
             try:
                 hit = self.es.get(id=lookup[config.ID_FIELD], **args)
             except elasticsearch.NotFoundError:
+                logger.info("not found")
                 return
 
             if not is_found(hit):
+                logger.info("not found")
                 return
 
             docs = self._parse_hits({'hits': {'hits': [hit]}}, resource)
+            logger.info(docs.first())
             return docs.first()
         else:
             if len(lookup) > 1:
                 terms = [{'term': {key: value}} for key, value in lookup.items()]
+                logger.info(terms)
                 query = {'query': {'filtered': {'filter': {'bool': {'must': terms}}}}}
+                logger.info(query)
             else:
                 query = {'query': {'term': lookup}}
-
+                logger.info(query)
             try:
                 args['size'] = 1
                 hits = self.es.search(body=query, **args)
@@ -413,8 +424,8 @@ class Elastic(DataLayer):
         ids = []
         kwargs.update(self._es_args(resource))
         for doc in doc_or_docs:
-            res = self.es.index(body=doc, id=doc.get('_id'), **kwargs)
-            ids.append(res.get('_id', doc.get('_id')))
+            res = self.es.index(body=doc, id=ObjectId(doc.get('_id')), **kwargs)
+            ids.append(res.get('_id', ObjectId(doc.get('_id'))))
         self._refresh_resource_index(resource)
         return ids
 
@@ -604,3 +615,12 @@ def _build_query_string(q, default_field=None, default_operator='AND'):
         query['query_string'].update({'lenient': False} if default_field else {'default_field': default_field})
 
     return query
+
+class PyElastic(dict):
+    """ Cache for Elasticsearch instances. It is just a normal dict which exposes
+    a 'db' property for backward compatibility.
+    .. versionadded:: 0.6
+    """
+    def __init__(self, elastic, *args):
+        self.elastic = elastic
+        dict.__init__(self, args)

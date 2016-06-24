@@ -422,7 +422,7 @@ class Elastic(DataLayer):
         self._refresh_resource_index(resource)
         return res
 
-    def update(self, resource, id_, updates):
+    def update(self, resource, id_, updates, original):
         args = self._es_args(resource, refresh=True)
         return self.es.update(id=id_, body={'doc': updates}, **args)
 

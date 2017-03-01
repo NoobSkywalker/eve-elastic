@@ -625,7 +625,7 @@ class Elastic(DataLayer):
         self._refresh_resource_index(resource)
         return res
 
-    def update(self, resource, id_, updates):
+    def update(self, resource, id_, updates, original):
         """Update document in index."""
         args = self._es_args(resource, refresh=True)
         if self._get_retry_on_conflict():

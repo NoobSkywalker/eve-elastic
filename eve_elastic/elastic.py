@@ -40,8 +40,9 @@ def get_dates(schema):
     """Return list of datetime fields for given schema."""
     dates = [config.LAST_UPDATED, config.DATE_CREATED]
     for field, field_schema in schema.items():
-        if field_schema['type'] == 'datetime':
-            dates.append(field)
+        if 'type' in field_schema:
+            if field_schema['type'] == 'datetime':
+                dates.append(field)
     return dates
 
 
@@ -540,10 +541,10 @@ class Elastic(DataLayer):
         ids = []
         kwargs.update(self._es_args(resource))
         for doc in doc_or_docs:
-            _id = doc.pop('_id', None)
+            _id = ObjectId(doc.pop('_id', None))
             res = self.elastic(resource).index(body=doc, id=_id, **kwargs)
             doc.setdefault('_id', res.get('_id', _id))
-            ids.append(doc.get('_id'))
+            ids.append(ObjectId(doc.get('_id')))
         self._refresh_resource_index(resource)
         return ids
 

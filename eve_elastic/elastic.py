@@ -16,7 +16,7 @@ from flask import request, abort
 from eve.utils import config
 from eve.io.base import DataLayer
 from eve.io.mongo.parser import parse, ParseError
-
+from arrow.parser import ParserError
 
 logging.basicConfig()
 logger = logging.getLogger('elastic')
@@ -33,6 +33,8 @@ def parse_date(date_str):
             date = arrow.get(date_str).datetime
     except TypeError:
         date = arrow.get(date_str[0]).datetime
+    except ParserError:
+        return None
     return date
 
 

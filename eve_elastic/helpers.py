@@ -1,6 +1,6 @@
-"""Backporting helpers from 1.x branch:
+"""Backporting helpers from 1.x branch.
 
-https://github.com/elastic/elasticsearch-py/blob/1.x/elasticsearch/helpers/__init__.py
+See: https://github.com/elastic/elasticsearch-py/blob/1.x/elasticsearch/helpers/__init__.py
 """
 
 from __future__ import unicode_literals
@@ -14,9 +14,10 @@ from elasticsearch.compat import map, string_types
 logger = logging.getLogger('elasticsearch.helpers')
 
 class BulkIndexError(ElasticsearchException):
+    """Bulk index errors class."""
     @property
     def errors(self):
-        """ List of errors from execution of the last chunk. """
+        """List of errors from execution of the last chunk."""
         return self.args[1]
 
 
@@ -24,8 +25,7 @@ class ScanError(ElasticsearchException):
     pass
 
 def expand_action(data):
-    """
-    From one document or action definition passed in by the user extract the
+    """From one document or action definition passed in by the user extract the
     action/data lines needed for elasticsearch's
     :meth:`~elasticsearch.Elasticsearch.bulk` api.
     """
@@ -49,7 +49,7 @@ def expand_action(data):
     return action, data.get('_source', data)
 
 def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
-    """
+    """"
     Split actions into chunks by number or size, serialize them into strings in
     the process.
     """
@@ -79,9 +79,7 @@ def _chunk_actions(actions, chunk_size, max_chunk_bytes, serializer):
         yield bulk_actions
 
 def _process_bulk_chunk(client, bulk_actions, raise_on_exception=True, raise_on_error=True, **kwargs):
-    """
-    Send a bulk request to elasticsearch and process the output.
-    """
+    """Send a bulk request to elasticsearch and process the output."""
     # if raise on error is set, we need to collect errors per chunk before raising them
     errors = []
 
@@ -224,7 +222,7 @@ def parallel_bulk(client, actions, thread_count=4, chunk_size=500,
     for result in pool.imap(
         lambda chunk: list(_process_bulk_chunk(client, chunk, **kwargs)),
         _chunk_actions(actions, chunk_size, max_chunk_bytes, client.transport.serializer)
-        ):
+    ):
         for item in result:
             yield item
 
@@ -324,13 +322,15 @@ def reindex(client, source_index, target_index, query=None, target_client=None,
     """
     target_client = client if target_client is None else target_client
 
-    docs = scan(client,
-        query=query,
-        index=source_index,
-        scroll=scroll,
-        fields=('_source', '_parent', '_routing', '_timestamp'),
-        **scan_kwargs
-    )
+    docs = scan(
+            client,
+            query=query,
+            index=source_index,
+            scroll=scroll,
+            fields=('_source', '_parent', '_routing', '_timestamp'),
+            **scan_kwargs
+            )
+
     def _change_doc_index(hits, index):
         for h in hits:
             h['_index'] = index

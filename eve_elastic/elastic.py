@@ -661,7 +661,7 @@ class Elastic(DataLayer):
             _id = doc.pop('_id', None)
             res = self.elastic(resource).index(body=doc, id=_id, **kwargs)
             doc.setdefault('_id', res.get('_id', _id))
-            ids.append(doc.get('_id'))
+            ids.append(ObjectId(doc.get('_id')))
         self._refresh_resource_index(resource)
         return ids
 
@@ -680,7 +680,7 @@ class Elastic(DataLayer):
         self._refresh_resource_index(resource)
         return res
 
-    def update(self, resource, id_, updates):
+    def update(self, resource, id_, updates, original):
         """Update document in index."""
         args = self._es_args(resource, refresh=True)
         if self._get_retry_on_conflict():

@@ -64,6 +64,7 @@ def format_doc(hit, schema, dates):
 
 
 def noop():
+    """no-op."""
     pass
 
 
@@ -73,11 +74,13 @@ def is_elastic(datasource):
 
 
 def generate_index_name(alias):
+    """Generate a random name alias for an index."""
     random = str(uuid4()).split('-')[0]
     return '{}_{}'.format(alias, random)
 
 
 def reindex(es, source, dest):
+    """Call reindex with appropriate version."""
     version = es.info().get('version').get('number')
     if version.startswith('1.'):
         return reindex_old(es, source, dest)
@@ -86,12 +89,12 @@ def reindex(es, source, dest):
 
 
 class InvalidSearchString(Exception):
-    '''Exception thrown when search string has invalid value'''
+    """Exception thrown when search string has invalid value."""
     pass
 
 
 class InvalidIndexSettings(Exception):
-    """Exception is thrown when put_settings is called without ELASTIC_SETTINGS"""
+    """Exception is thrown when put_settings is called without ELASTIC_SETTINGS."""
     pass
 
 
@@ -115,6 +118,7 @@ class ElasticCursor(object):
         self.docs = docs if docs else []
 
     def __getitem__(self, key):
+        """Return a specific document item."""
         return self.docs[key]
 
     def first(self):
@@ -133,28 +137,45 @@ class ElasticCursor(object):
             response['_aggregations'] = self.hits['aggregations']
 
 
-def set_filters(query, base_filters):
-    """Put together all filters we have and set them as 'and' filter
-    within filtered query.
+def set_filters(query, must_filter, base_filters=None):
+    """Put together must_filters and base_filters that are requested and set them as filter or accordingly.
 
     :param query: elastic query being constructed
-    :param base_filters: all filters set outside of query (eg. resource config, sub_resource_lookup)
+    :param base_filters: all filters defined in the mapping already (elastic_filter_callback, elastic_filter)
+    :param must_filters: all filters set inside the query (eg. resource config, sub_resource_lookup)
     """
+
     filters = [f for f in base_filters if f is not None]
-    query_filter = query['query']['filtered'].get('filter', None)
+    must_filters = [f for f in must_filter if f is not None]
+
+    query_filter = query['query'].get('filter', None)
+
     if query_filter is not None:
-        if 'and' in query_filter:
-            filters.extend(query_filter['and'])
-        else:
-            filters.append(query_filter)
+        filters = query_filter
+
+    if 'bool' not in query['query'] and (must_filters or filters):
+        query['query']['bool'] = {}
+
+    if must_filters:
+        query['query']['bool']['must'] = must_filters
     if filters:
-        query['query']['filtered']['filter'] = {'and': filters}
+        query['query']['bool']['filter'] = filters
 
 
 def set_sort(query, sort):
+    """Set the sorting on the sorted value to the field.
+
+    For reference see https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-sort.html
+    """
     query['sort'] = []
     for (key, sortdir) in sort:
-        sort_dict = dict([(key, 'asc' if sortdir > 0 else 'desc')])
+        # check sort order
+        sort_order = dict([("order", 'asc' if sortdir > 0 else 'desc')])
+        sort_dict = dict([(key, sort_order)])
+        ignore_unmapped = {"unmapped_type": "long"}
+
+        # append sort order and unmapped_type to the key.
+        sort_dict[key].update(ignore_unmapped)
         query['sort'].append(sort_dict)
 
 
@@ -170,6 +191,7 @@ def get_es(url, **kwargs):
 
 
 def get_indices(es):
+    """Return elasticsearch indeces."""
     return es.indices
 
 
@@ -183,21 +205,23 @@ class Elastic(DataLayer):
     }
 
     def __init__(self, app=None, **kwargs):
-        """Let user specify extra arguments for Elasticsearch"""
+        """Let user specify extra arguments for Elasticsearch."""
         self.app = app
         self.kwargs = kwargs
         self.elastics = {}
         super(Elastic, self).__init__(app)
 
     def init_app(self, app):
+        """Initialize the application."""
         app.config.setdefault('ELASTICSEARCH_URL', 'http://localhost:9200/')
-        app.config.setdefault('ELASTICSEARCH_INDEX', 'eve')
+
+        # domain items now need to create an index for each document type
+        # therefore on init we set create the index relations by providing a value in resource
         app.config.setdefault('ELASTICSEARCH_INDEXES', {})
         app.config.setdefault('ELASTICSEARCH_FORCE_REFRESH', True)
         app.config.setdefault('ELASTICSEARCH_AUTO_AGGREGATIONS', True)
 
         self.app = app
-        self.index = app.config['ELASTICSEARCH_INDEX']
         self.es = get_es(app.config['ELASTICSEARCH_URL'], **self.kwargs)
 
     def init_index(self, app=None):
@@ -207,19 +231,15 @@ class Elastic(DataLayer):
         for index, settings in elasticindexes.items():
             es = settings['resource']
             if not es.indices.exists(index):
-                self.create_index(index, settings.get('index_settings'), es)
+                self.create_index(index, dict([('mappings', settings.get('mappings'))]), es)
                 continue
             else:
-                self.put_settings(app, index, settings.get('index_settings').get('settings'), es)
+                self.put_settings(app, index, dict([('mappings', settings.get('mappings'))]).get('settings'), es)
 
-            for mapping_type, mappings in settings.get('index_settings', {}).get('mappings').items():
-                self._put_resource_mapping(mapping_type, es,
-                                           properties=mappings,
-                                           index=index, doc_type=mapping_type)
         return
 
     def _get_indexes(self):
-        """Based on the resource definition calculates the index definition"""
+        """Based on the resource definition calculates the index definition."""
         indexes = {}
         for resource in self._get_elastic_resources():
             try:
@@ -232,8 +252,11 @@ class Elastic(DataLayer):
                 indexes.update({
                     index: {
                         'resource': self.elastic(resource),
+                        'mappings': {
+                            "doc": {
+                            }
+                        },
                         'index_settings': {
-                            'mappings': {}
                         }
                     }
                 })
@@ -243,13 +266,13 @@ class Elastic(DataLayer):
                     indexes[index]['index_settings'].update(settings)
 
             resource_config = self.app.config['DOMAIN'][resource]
-            properties = self._get_mapping_properties(resource_config, parent=self._get_parent_type(resource))
-            datasource = self.get_datasource(resource)
-            indexes[index]['index_settings']['mappings'][datasource[0]] = properties
+            properties = self._get_mapping_properties(resource_config)
+            indexes[index]['mappings']['doc'] = properties
 
         return indexes
 
     def get_datasource(self, resource):
+        """Get datasource for given resource."""
         if hasattr(self, '_datasource'):
             return self._datasource(resource)
         return self.datasource(resource)
@@ -271,16 +294,31 @@ class Elastic(DataLayer):
 
         :param schema: field schema
         """
+
         if 'mapping' in schema:
             return schema['mapping']
         elif schema['type'] == 'dict' and 'schema' in schema:
             return self._get_mapping(schema['schema'])
         elif schema['type'] == 'list' and 'schema' in schema.get('schema', {}):
             return self._get_mapping(schema['schema']['schema'])
+
+        # add mapping for parent_child relations
+        if schema['type'] == 'join':
+            return {'type': 'join', 'relations': schema['relations']}
+
+        # sorting for date when value is empty results in an exception
+        # https://www.elastic.co/guide/en/elasticsearch/reference/current/ignore-malformed.html
+        elif schema['type'] == 'datetime' and 'ignore_malformed' in schema:
+            return {'type': 'date', 'ignore_malformed': schema['ignore_malformed']}
         elif schema['type'] == 'datetime':
             return {'type': 'date'}
-        elif schema['type'] == 'string' and schema.get('unique'):
-            return {'type': 'string', 'index': 'not_analyzed'}
+
+        # copy text and keywords field to an all field so they can still be used for query_string
+        # https://github.com/elastic/elasticsearch/issues/19784
+        elif schema['type'] == 'text':
+            return {'type': 'text', 'copy_to': 'all'}
+        elif schema['type'] == 'keyword':
+            return {'type': 'keyword', 'copy_to': 'all'}
 
     def create_index(self, index=None, settings=None, es=None):
         """Create new index and ignore if it exists already."""
@@ -289,8 +327,8 @@ class Elastic(DataLayer):
         if es is None:
             es = self.es
         try:
-            alias = index
-            index = generate_index_name(alias)
+            # add an index_name alias
+            alias = generate_index_name(index)
 
             args = {'index': index}
             if settings:
@@ -319,7 +357,7 @@ class Elastic(DataLayer):
     def _put_resource_mapping(self, resource, es, force_index=None, properties=None, **kwargs):
         if not properties:
             resource_config = self.app.config['DOMAIN'][resource]
-            properties = self._get_mapping_properties(resource_config, parent=self._get_parent_type(resource))
+            properties = self._get_mapping_properties(resource_config)
 
         if not kwargs:
             kwargs = self._es_args(resource)
@@ -372,7 +410,7 @@ class Elastic(DataLayer):
 
             kwargs = {
                 'index': index or self._resource_index(resource),
-                'doc_type': resource,
+                'doc_type': 'doc',
                 'body': properties,
             }
 
@@ -381,12 +419,14 @@ class Elastic(DataLayer):
             except elasticsearch.exceptions.RequestError:
                 logger.exception('mapping error, updating settings resource=%s' % resource)
 
-    def get_mapping(self, index, doc_type=None):
+    def get_mapping(self, index=None, doc_type=None):
         """Get mapping for index.
 
         :param index: index name
         """
         mapping = self.es.indices.get_mapping(index=index, doc_type=doc_type)
+        if index is None:
+            return mapping
         return next(iter(mapping.values()))
 
     def get_settings(self, index):
@@ -412,29 +452,38 @@ class Elastic(DataLayer):
 
     def find(self, resource, req, sub_resource_lookup):
         """Find documents for resource."""
+
         args = getattr(req, 'args', request.args if request else {}) or {}
         source_config = config.SOURCES[resource]
 
+        source_filter = None
         if args.get('source'):
             query = json.loads(args.get('source'))
-            if 'filtered' not in query.get('query', {}):
+            if 'filter' in query.get('query', {}):
                 _query = query.get('query')
-                query['query'] = {'filtered': {}}
+                query['query'] = {'bool': {}}
                 if _query:
-                    query['query']['filtered']['query'] = _query
-        else:
-            query = {'query': {'filtered': {}}}
+                    source_filter = _query['filter']
+            else:
+                _query = query.get('query')
+                query = {'query': {'bool': {}}}
+                source_filter = _query
 
+        else:
+            query = {'query': {'bool': {}}}
+
+        must_filter = []
         if args.get('q', None):
-            query['query']['filtered']['query'] = _build_query_string(args.get('q'),
-                                                                      default_field=args.get('df', '_all'),
-                                                                      default_operator=args.get('default_operator', 'OR'))
+            # underscore is not supported/ignored in es 6.2, use -all- instead where we copied text and keyword to.
+            must_filter.append(_build_query_string(args.get('q'),
+                                                   default_field=args.get('df', 'all'),
+                                                   default_operator=args.get('default_operator', 'OR')))
 
         if 'sort' not in query:
             if req.sort:
                 sort = ast.literal_eval(req.sort)
                 set_sort(query, sort)
-            elif self._default_sort(resource) and 'query' not in query['query']['filtered']:
+            elif self._default_sort(resource):
                 set_sort(query, self._default_sort(resource))
 
         if req.max_results:
@@ -446,9 +495,11 @@ class Elastic(DataLayer):
         filters = []
         filters.append(source_config.get('elastic_filter'))
         filters.append(source_config.get('elastic_filter_callback', noop)())
-        filters.append({'and': _build_lookup_filter(sub_resource_lookup)} if sub_resource_lookup else None)
-        filters.append(json.loads(args.get('filter')) if 'filter' in args else None)
-        filters.extend(args.get('filters') if 'filters' in args else [])
+        filters.append(source_filter)
+
+        must_filter.append(_build_lookup_filter(sub_resource_lookup) if sub_resource_lookup else None)
+        must_filter.append(json.loads(args.get('filter')) if 'filter' in args else None)
+        must_filter.extend(args.get('filters') if 'filters' in args else [])
 
         if req.where:
             try:
@@ -459,7 +510,7 @@ class Elastic(DataLayer):
                 except ParseError:
                     abort(400)
 
-        set_filters(query, filters)
+        set_filters(query, must_filter, filters)
 
         if 'facets' in source_config:
             query['facets'] = source_config['facets']
@@ -468,7 +519,8 @@ class Elastic(DataLayer):
             query['aggs'] = source_config['aggregations']
 
         if 'es_highlight' in source_config and self.should_highlight(req):
-            query_string = query['query'].get('filtered', {}).get('query', {}).get('query_string')
+
+            query_string = query['query']
             highlights = source_config.get('es_highlight', noop)(query_string)
 
             if highlights:
@@ -480,6 +532,7 @@ class Elastic(DataLayer):
             source_projections = self.get_projected_fields(req)
 
         args = self._es_args(resource, source_projections=source_projections)
+
         try:
             hits = self.elastic(resource).search(body=query, **args)
         except elasticsearch.exceptions.RequestError as e:
@@ -500,40 +553,36 @@ class Elastic(DataLayer):
         try:
             return self.app.config.get('ELASTICSEARCH_AUTO_AGGREGATIONS') or \
                    bool(req.args and int(req.args.get('aggregations')))
-        except:
+        except Exception:
             return False
 
     def should_highlight(self, req):
-        """
-        Check the given argument parameter to decide if highlights needed.
+        """Check the given argument parameter to decide if highlights needed.
 
         argument value is expected to be '0' or '1'
         """
         try:
             return bool(req.args and int(req.args.get('es_highlight', 0)))
-        except:
+        except Exception:
             return False
 
     def should_project(self, req):
-        """
-        Check the given argument parameter to decide if projections needed.
+        """Check the given argument parameter to decide if projections needed.
 
         argument value is expected to be a list of strings
         """
         try:
             return req.args and json.loads(req.args.get('projections', []))
-        except:
+        except Exception:
             return False
 
     def get_projected_fields(self, req):
-        """
-        Returns the projected fields from request.
+        """Return the projected fields from request."""
 
-        """
         try:
             args = getattr(req, 'args', {})
             return ','.join(json.loads(args.get('projections')))
-        except:
+        except Exception:
             return None
 
     def find_one(self, resource, req, **lookup):
@@ -544,7 +593,7 @@ class Elastic(DataLayer):
         else:
             args = self._es_args(resource)
             filters = [{'term': {key: val}} for key, val in lookup.items()]
-            query = {'query': {'constant_score': {'filter': {'and': filters}}}}
+            query = {'query': {'bool': {'filter': filters}}}
 
             try:
                 args['size'] = 1
@@ -555,8 +604,9 @@ class Elastic(DataLayer):
                 return
 
     def _find_by_id(self, resource, _id, parent=None):
-        """Find the document by Id. If parent is not provided then on
-        routing exception try to find using search.
+        """Find the document by Id.
+
+        If parent is not provided then on routing exception try to find using search.
         """
         def is_found(hit):
             if 'exists' in hit:
@@ -605,29 +655,32 @@ class Elastic(DataLayer):
         """Insert document, it must be new if there is ``_id`` in it."""
         ids = []
         kwargs.update(self._es_args(resource))
+
         for doc in doc_or_docs:
-            self._update_parent_args(resource, kwargs, doc)
+            self._update_parent_join_args(kwargs, doc)
             _id = doc.pop('_id', None)
             res = self.elastic(resource).index(body=doc, id=_id, **kwargs)
             doc.setdefault('_id', res.get('_id', _id))
-            ids.append(ObjectId(doc.get('_id')))
+            ids.append(doc.get('_id'))
         self._refresh_resource_index(resource)
         return ids
 
     def bulk_insert(self, resource, docs, **kwargs):
-        """Bulk insert documents."""
-        kwargs.update(self._es_args(resource))
-        parent_type = self._get_parent_type(resource)
-        if parent_type:
-            for doc in docs:
-                if doc.get(parent_type.get('field')):
-                    doc['_parent'] = doc.get(parent_type.get('field'))
+        """Bulk insert documents.
 
+        If documents contain join_fields a field _routing containing
+        the parent_id has to be added to make sure parent-join works as they have to be indexed on
+        the same shard.
+        """
+
+        kwargs.update(self._es_args(resource))
+
+        # if a join field exists a routing has to be added, see test_bulk_insert for example
         res = bulk(self.elastic(resource), docs, stats_only=False, **kwargs)
         self._refresh_resource_index(resource)
         return res
 
-    def update(self, resource, id_, updates, original):
+    def update(self, resource, id_, updates):
         """Update document in index."""
         args = self._es_args(resource, refresh=True)
         if self._get_retry_on_conflict():
@@ -635,7 +688,7 @@ class Elastic(DataLayer):
 
         updates.pop('_id', None)
         updates.pop('_type', None)
-        self._update_parent_args(resource, args, updates)
+        self._update_parent_join_args(args, updates)
         return self.elastic(resource).update(id=id_, body={'doc': updates}, **args)
 
     def replace(self, resource, id_, document):
@@ -643,7 +696,7 @@ class Elastic(DataLayer):
         args = self._es_args(resource, refresh=True)
         document.pop('_id', None)
         document.pop('_type', None)
-        self._update_parent_args(resource, args, document)
+        self._update_parent_join_args(args, document)
         return self.elastic(resource).index(body=document, id=id_, **args)
 
     def remove(self, resource, lookup=None, parent=None, **kwargs):
@@ -709,10 +762,12 @@ class Elastic(DataLayer):
 
     def _es_args(self, resource, refresh=None, source_projections=None):
         """Get index and doctype args."""
-        datasource = self.get_datasource(resource)
+        # doc type name will be obsolete in the future but not yet updated in elasticsearch-py
+        # right now it will be always the only mapping type which is called doc
+        # https://github.com/elastic/elasticsearch-py/issues/646
         args = {
             'index': self._resource_index(resource),
-            'doc_type': datasource[0],
+            'doc_type': "doc",
         }
         if source_projections:
             args['_source'] = source_projections
@@ -723,25 +778,25 @@ class Elastic(DataLayer):
 
     def _get_parent_type(self, resource):
         resource_config = self.app.config['DOMAIN'][resource] or {}
-        return resource_config.get('datasource', {}).get('elastic_parent', {})
+        return resource_config.get('schema', {}).get('elastic_parent', {})
 
-    def get_parent_id(self, resource, document):
-        """Get the Parent Id of the document
+    def get_parent_id(self, document):
+        """Get the parent id for routing the child to the proper shard.
 
-        :param resource: resource name
         :param document: document containing the parent id
         """
-        parent_type = self._get_parent_type(resource)
-        if parent_type and document:
-            return document.get(parent_type.get('field'))
+        join_field = document.get('join_field')
+
+        if join_field and 'parent' in join_field:
+            return join_field.get('parent')
 
         return None
 
-    def _update_parent_args(self, resource, args, document):
-        parent_type = self._get_parent_type(resource)
-        parent = self.get_parent_id(resource, document)
-        if parent_type and parent:
-            args['parent'] = parent
+    def _update_parent_join_args(self, args, document):
+        """Add routing to arguments when document contains a parent field."""
+        routing = self.get_parent_id(document)
+        if routing:
+            args['routing'] = routing
 
     def _fields(self, resource):
         """Get projection fields for given resource."""
@@ -762,7 +817,7 @@ class Elastic(DataLayer):
         """
         datasource = self.get_datasource(resource)
         indexes = self._resource_config(resource, 'INDEXES') or {}
-        default_index = self._resource_config(resource, 'INDEX')
+        default_index = resource
         return indexes.get(datasource[0], default_index)
 
     def _refresh_resource_index(self, resource):
@@ -800,26 +855,21 @@ class Elastic(DataLayer):
         return self.elastics[px]
 
     def _get_retry_on_conflict(self):
-        """ Get the retry on settings"""
+        """Get the retry on settings."""
         return self.app.config.get('ELASTICSEARCH_RETRY_ON_CONFLICT', 5)
 
 
 def build_elastic_query(doc):
-    """
-    Build a query which follows ElasticSearch syntax from doc.
+    """Build a query which follows ElasticSearch syntax from doc.
 
     1. Converts {"q":"cricket"} to the below elastic query::
 
         {
             "query": {
-                "filtered": {
-                    "query": {
                         "query_string": {
                             "query": "cricket",
                             "lenient": false,
                             "default_operator": "AND"
-                        }
-                    }
                 }
             }
         }
@@ -832,7 +882,7 @@ def build_elastic_query(doc):
 
         {
             "query": {
-                "filtered": {
+                "bool": {
                     "filter": {
                         "and": [
                             {"terms": {"type": ["text"]}},
@@ -854,11 +904,11 @@ def build_elastic_query(doc):
                 It's the developer responsibility to pass right object.
     :returns ElasticSearch query
     """
-    elastic_query, filters = {"query": {"filtered": {}}}, []
+    elastic_query, filters = {"query": {}}, []
 
     for key in doc.keys():
         if key == 'q':
-            elastic_query['query']['filtered']['query'] = _build_query_string(doc['q'])
+            elastic_query['query'] = _build_query_string(doc['q'])
         else:
             _value = doc[key]
             filters.append({"terms": {key: _value}} if isinstance(_value, list) else {"term": {key: _value}})
@@ -868,8 +918,7 @@ def build_elastic_query(doc):
 
 
 def _build_query_string(q, default_field=None, default_operator='AND'):
-    """
-    Build ``query_string`` object from ``q``.
+    """Build ``query_string`` object from ``q``.
 
     :param q: q of type String
     :param default_field: default_field
@@ -883,10 +932,10 @@ def _build_query_string(q, default_field=None, default_operator='AND'):
         return query_string.strip().strip('"')
 
     if _is_phrase_search(q):
-        query = {'match_phrase': {'_all': _get_phrase(q)}}
+        query = {'match_phrase': {'all': _get_phrase(q)}}
     else:
         query = {'query_string': {'query': q, 'default_operator': default_operator}}
-        query['query_string'].update({'lenient': False} if default_field else {'default_field': default_field})
+        # query['query_string'].update({'lenient': False} if default_field else {'default_field': default_field})
 
     return query
 

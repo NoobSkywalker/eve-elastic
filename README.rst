@@ -91,3 +91,31 @@ To add a facets support for specific resource, add ``facets`` into its ``datasou
         }
 
 You will find more info about facets in `elasticsearch docs <http://www.elasticsearch.org/guide/en/elasticsearch/reference/current/search-facets.html>`_.
+
+Testing
+---------
+
+If you want to add features make sure you dont breake any tests.
+
+You can run
+
+.. code-block:: bash
+
+    $ make test
+
+which installs dependencies in a virtual env in the tmp folder and runs all tests.
+
+For code quality checks you can runs
+
+.. code-block:: bash
+
+    $ make checks
+    
+Which checks for linting etc.
+
+Breaking Changes due to Elasticsearch 6.0 update
+------------------------------------------------
+
+A lot of stuff has been changed in the newest elasticsearch. One of the biggest changes is the removal of mapping types. Therefore eve-elastic has been
+restructured so that for every resource a seperate index is created as recommended. This removes the need of a standard INDEX settings and later on the doc_type
+will get obsolete as well.

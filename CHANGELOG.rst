@@ -3,6 +3,26 @@
 Changelog
 ---------
 
+2.4 (2017-08-02)
+++++++++++++++++
+
+- add support for kwargs to ``remove`` (by Luis Fernando Gomes)
+
+2.3 (2017-07-27)
+++++++++++++++++
+
+- add support for parent-child relations.
+
+2.2 (2017-07-21)
+++++++++++++++++
+
+- add `ELASTICSEARCH_RETRY_ON_CONFLICT` setting
+
+2.1 (2017-03-27)
+++++++++++++++++
+
+- support `es_highlight` to be a callback.
+
 2.0 (2017-02-03)
 ++++++++++++++++
 

@@ -1,2 +1,10 @@
 nose
 flake8
+mock
+nose
+eve
+ElasticSearch
+pytz
+pylama
+ciso8601
+arrow

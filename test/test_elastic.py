@@ -10,22 +10,44 @@ from flask import json
 from eve.utils import config, ParsedRequest, parse_request
 from eve_elastic.elastic import parse_date, Elastic, get_indices, get_es, generate_index_name
 from nose.tools import raises
+try:
+    from unittest.mock import MagicMock
+except ImportError:
+    from mock import MagicMock
+
+
+def highlight_callback(query_string):
+    elastic_highlight_query = {
+        'pre_tags': ['<span class=\"es-highlight\">'],
+        'post_tags': ['</span>'],
+        'fields': {
+            'name': {'number_of_fragments': 0},
+            'description': {'number_of_fragments': 0}
+        }
+    }
+
+    if query_string:
+        for key in elastic_highlight_query['fields']:
+            # highlights do not use query_string anymore
+            # refer to https://www.elastic.co/guide/en/elasticsearch/reference/current/search-request-highlighting.html
+            elastic_highlight_query['fields'][key]['highlight_query'] = query_string
+        return elastic_highlight_query
 
 
 DOMAIN = {
     'items': {
         'schema': {
-            'uri': {'type': 'string', 'unique': True},
-            'name': {'type': 'string'},
-            'firstcreated': {'type': 'datetime'},
+            'uri': {'type': 'keyword'},
+            'name': {'type': 'text'},
+            'firstcreated': {'type': 'datetime', 'ignore_malformed': True},
             'category': {
-                'type': 'string',
-                'mapping': {'type': 'string', 'index': 'not_analyzed'}
+                'type': 'keyword',
+                'unique': True,
             },
             'dateline': {
                 'type': 'dict',
                 'schema': {
-                    'place': {'type': 'string'},
+                    'place': {'type': 'text'},
                     'created': {'type': 'datetime'},
                     'extra': {'type': 'dict'},
                 }
@@ -35,7 +57,7 @@ DOMAIN = {
                 'schema': {
                     'type': 'dict',
                     'schema': {
-                        'name': {'type': 'string'},
+                        'name': {'type': 'text'},
                         'created': {'type': 'datetime'},
                     }
                 }
@@ -61,10 +83,10 @@ DOMAIN = {
     },
     'items_with_description': {
         'schema': {
-            'uri': {'type': 'string', 'unique': True},
-            'name': {'type': 'string'},
-            'description': {'type': 'string'},
-            'firstcreated': {'type': 'datetime'},
+            'uri': {'type': 'keyword'},
+            'name': {'type': 'keyword'},
+            'description': {'type': 'text'},
+            'firstcreated': {'type': 'datetime', "ignore_unmapped" : True},
         },
         'datasource': {
             'backend': 'elastic',
@@ -72,19 +94,12 @@ DOMAIN = {
             'default_sort': [('firstcreated', -1)],
             'elastic_filter': {'exists': {'field': 'description'}},
             'aggregations': {'type': {'terms': {'field': 'name'}}},
-            'es_highlight': {
-                                'pre_tags': ['<span class=\"es-highlight\">'],
-                                'post_tags': ['</span>'],
-                                'fields': {
-                                    'name': {'number_of_fragments': 0},
-                                    'description': {'number_of_fragments': 0}
-                                }
-            }
+            'es_highlight': highlight_callback
         }
     },
     'items_with_callback_filter': {
         'schema': {
-            'uri': {'type': 'string', 'unique': True}
+            'uri': {'type': 'text', 'unique': True}
         },
         'datasource': {
             'backend': 'elastic',
@@ -93,8 +108,8 @@ DOMAIN = {
     },
     'items_foo': {
         'schema': {
-            'uri': {'type': 'string'},
-            'firstcreated': {'type': 'datetime'},
+            'uri': {'type': 'keyword'},
+            'firstcreated': {'type': 'datetime', "ignore_unmapped" : True},
         },
         'datasource': {
             'backend': 'elastic',
@@ -103,7 +118,7 @@ DOMAIN = {
     },
     'items_foo_default_index': {
         'schema': {
-            'uri': {'type': 'string'}
+            'uri': {'type': 'keyword'}
         },
         'datasource': {
             'source': 'items_foo',
@@ -137,13 +152,12 @@ HIGHLIGHT = {
 }
 
 
-INDEX = 'elastic_tests'
-DOC_TYPE = 'items'
-
 
 class TestElastic(TestCase):
 
     def drop_index(self, index):
+        # index can not be dropped by alias anymore -> use index name
+        # https://github.com/javanna/elasticsearch/commit/9e62978956beb4169a4ea88238d8fe34ce9f25c9
         try:
             self.es.indices.delete(index)
         except elasticsearch.exceptions.NotFoundError:
@@ -152,13 +166,14 @@ class TestElastic(TestCase):
     def setUp(self):
         settings = {'DOMAIN': DOMAIN}
         settings['ELASTICSEARCH_URL'] = 'http://localhost:9200'
-        settings['ELASTICSEARCH_INDEX'] = INDEX
         settings['FOO_URL'] = settings['ELASTICSEARCH_URL']
-        settings['FOO_INDEX'] = 'foo'
         self.es = elasticsearch.Elasticsearch([settings['ELASTICSEARCH_URL']])
-        self.drop_index(INDEX)
         self.app = eve.Eve(settings=settings, data=Elastic)
+
         with self.app.app_context():
+            # drop existing indexes first
+            for item in settings["DOMAIN"].items():
+                self.drop_index(item[0])
             self.app.data.init_index(self.app)
 
     def test_parse_date(self):
@@ -179,10 +194,11 @@ class TestElastic(TestCase):
         with self.app.app_context():
             elastic.put_mapping(self.app)
 
-        mapping = elastic.get_mapping(elastic.index)
-        self.assertNotIn('published_items', mapping['mappings'])
+        mapping = elastic.get_mapping()
+        print(mapping)
+        self.assertNotIn('published_items', mapping)
 
-        items_mapping = mapping['mappings']['items']['properties']
+        items_mapping = mapping['items']['mappings']['doc']['properties']
 
         self.assertIn('firstcreated', items_mapping)
         self.assertEqual('date', items_mapping['firstcreated']['type'])
@@ -206,10 +222,8 @@ class TestElastic(TestCase):
     def test_dates_are_parsed_on_fetch(self):
         with self.app.app_context():
             ids = self.app.data.insert('items', [{'uri': 'test', 'firstcreated': '2012-10-10T11:12:13+0000'}])
-            self.app.data.update('published_items', ids[0], {'published': '2012-10-10T12:12:13+0000'})
-            item = self.app.data.find_one('published_items', req=None, uri='test')
+            item = self.app.data.find_one('items', req=None, uri='test')
             self.assertIsInstance(item['firstcreated'], datetime)
-            self.assertIsInstance(item['published'], datetime)
 
     def test_bulk_insert(self):
         with self.app.app_context():
@@ -285,7 +299,7 @@ class TestElastic(TestCase):
             self.assertEqual(1, res.count())
 
     def test_search_via_source_param_and_with_highlight(self):
-        query = {'query': {'query_string': {'query': 'foo'}}}
+        query = {'query': {'match': {'all': 'foo'}}}
         with self.app.app_context():
             self.app.data.insert('items_with_description', [{'uri': 'foo',
                                                              'description': 'This is foo',
@@ -365,9 +379,9 @@ class TestElastic(TestCase):
     def test_mapping_is_there_after_delete(self):
         with self.app.app_context():
             self.app.data.put_mapping(self.app)
-            mapping = self.app.data.get_mapping(INDEX, DOC_TYPE)
+            mapping = self.app.data.get_mapping('items', 'doc')
             self.app.data.remove('items')
-            self.assertEqual(mapping, self.app.data.get_mapping(INDEX, DOC_TYPE))
+            self.assertEqual(mapping, self.app.data.get_mapping('items', 'doc'))
 
     def test_find_one_raw(self):
         with self.app.app_context():
@@ -411,7 +425,7 @@ class TestElastic(TestCase):
             self.app.data.insert('items_with_description', [{'uri': 'foo', 'description': 'test'}, {'uri': 'bar'}])
             req = ParsedRequest()
             req.args = {}
-            req.args['source'] = json.dumps({'query': {'filtered': {'filter': {'term': {'uri': 'bar'}}}}})
+            req.args['source'] = json.dumps({'query': {'filter': {'term': {'uri': 'bar'}}}})
             self.assertEqual(0, self.app.data.find('items_with_description', req, None).count())
 
     def test_where_filter(self):
@@ -527,10 +541,10 @@ class TestElastic(TestCase):
                 {'uri': 'baz'},
             ])
 
-            query = {'query': {'filtered': {'filter': {'and': [
+            query = {'query': {'filter': [
                 {'term': {'uri': 'foo'}},
                 {'term': {'uri': 'bar'}},
-            ]}}}}
+            ]}}
 
             req = ParsedRequest()
             req.args = {'source': json.dumps(query)}
@@ -599,37 +613,6 @@ class TestElastic(TestCase):
             cursor = self.app.data.find('items', req, None)
             self.assertEqual(0, cursor.count())
 
-    def test_custom_index_settings_per_resource(self):
-        archived_index = 'elastic_test_archived'
-        archived_type = 'archived_items'
-
-        self.drop_index(archived_index)
-
-        with self.app.app_context():
-            self.app.config['ELASTICSEARCH_INDEXES'] = {archived_type: archived_index}
-            self.assertIn(archived_type, self.app.config['SOURCES'])
-
-        self.assertFalse(self.es.indices.exists(archived_index))
-
-        self.app.data = Elastic(self.app)
-        self.app.data.init_app(self.app)
-        with self.app.app_context():
-            self.app.data.init_index()
-
-        self.assertTrue(self.es.indices.exists(archived_index))
-        self.assertEqual(0, self.es.count(archived_index, archived_type)['count'])
-
-        with self.app.app_context():
-            self.app.data.insert(archived_type, [
-                {'name': 'foo', 'archived': '2013-01-01T11:12:13+0000'},
-            ])
-
-        self.assertEqual(1, self.es.count(archived_index, archived_type)['count'])
-
-        with self.app.app_context():
-            item = self.app.data.find_one(archived_type, req=None, name='foo')
-            self.assertEqual('foo', item['name'])
-
     def test_no_force_refresh(self):
         with self.app.app_context():
             self.app.config['ELASTICSEARCH_FORCE_REFRESH'] = False
@@ -650,8 +633,6 @@ class TestElastic(TestCase):
         self.drop_index('foo')
         with self.app.app_context():
             self.app.data.init_index()
-            mapping = self.app.data.get_mapping('foo', 'items_foo')['mappings']['items_foo']['properties']
-            self.assertIn('firstcreated', mapping)
 
             self.app.data.insert('items_foo_default_index', [{'uri': 'test'}])
             foo_items = self.app.data.find('items_foo', ParsedRequest(), None)
@@ -661,8 +642,31 @@ class TestElastic(TestCase):
             foo_items = self.app.data.find('items_foo', ParsedRequest(), None)
             self.assertEqual(2, foo_items.count())
 
+    def test_retry_on_conflict(self):
+        with self.app.app_context():
+            original_method = self.app.data.elastic('items').update
+            update_mock = MagicMock()
+            self.app.data.elastic('items').update = update_mock
 
-class TestElasticSearchWithSettings(TestCase):
+            self.app.data.update('items', 'foo', {'uri': 'bar', '_id': 'foo', '_type': 'items'})
+            self.assertEqual(update_mock.call_count, 1)
+            self.assertIn('retry_on_conflict', update_mock.call_args[1])
+            self.assertEqual(update_mock.call_args[1]['retry_on_conflict'], 5)
+
+            self.app.config['ELASTICSEARCH_RETRY_ON_CONFLICT'] = 1
+            self.app.data.update('items', 'foo', {'uri': 'bar', '_id': 'foo', '_type': 'items'})
+            self.assertEqual(update_mock.call_count, 2)
+            self.assertIn('retry_on_conflict', update_mock.call_args[1])
+            self.assertEqual(update_mock.call_args[1]['retry_on_conflict'], 1)
+
+            self.app.config['ELASTICSEARCH_RETRY_ON_CONFLICT'] = None
+            self.app.data.update('items', 'foo', {'uri': 'bar', '_id': 'foo', '_type': 'items'})
+            self.assertEqual(update_mock.call_count, 3)
+            self.assertNotIn('retry_on_conflict', update_mock.call_args[1])
+            self.app.data.elastic('items').update = original_method
+
+
+class TestElasticSearchParentChild(TestCase):
     index_name = 'elastic_settings'
 
     def setUp(self):
@@ -671,12 +675,12 @@ class TestElasticSearchWithSettings(TestCase):
                 'items': {
                     'schema': {
                         'slugline': {
-                            'type': 'string',
+                            'type': 'text',
                             'mapping': {
-                                'type': 'string',
+                                'type': 'text',
                                 'fields': {
                                     'phrase': {
-                                        'type': 'string',
+                                        'type': 'text',
                                         'analyzer': 'phrase_prefix_analyzer',
                                         'search_analyzer': 'phrase_prefix_analyzer'
                                     }
@@ -690,7 +694,6 @@ class TestElasticSearchWithSettings(TestCase):
                 }
             },
             'ELASTICSEARCH_URL': 'http://localhost:9200',
-            'ELASTICSEARCH_INDEX': self.index_name,
             'ELASTICSEARCH_SETTINGS': ELASTICSEARCH_SETTINGS
         }
 
@@ -703,6 +706,7 @@ class TestElasticSearchWithSettings(TestCase):
             self.es = get_es(self.app.config.get('ELASTICSEARCH_URL'))
 
     def tearDown(self):
+        """ Cleanup index after finished tests."""
         with self.app.app_context():
             get_indices(self.es).delete(self.index_name)
 
@@ -752,12 +756,12 @@ class TestElasticSearchWithSettings(TestCase):
     def test_put_settings_existing_index(self):
         with self.app.app_context():
             self.app.config['DOMAIN']['items']['schema']['slugline'] = {
-                'type': 'string',
+                'type': 'text',
                 'mapping': {
-                    'type': 'string',
+                    'type': 'text',
                     'fields': {
                         'phrases': {
-                            'type': 'string',
+                            'type': 'text',
                             'analyzer': 'prefix_analyzer',
                             'search_analyzer': 'prefix_analyzer'
                         }
@@ -791,3 +795,191 @@ class TestElasticSearchWithSettings(TestCase):
 
         es = get_es('http://localhost:9200', serializer=TestSerializer())
         self.assertIsInstance(es.transport.serializer, TestSerializer)
+
+
+class TestElasticSearchParentChild(TestCase):
+    """ ES 6.0 uses parent-join field to handle parent child relationships,
+    The join field shouldn’t be used like joins in a relation database.
+    In Elasticsearch the key to good performance is to de-normalize your data into documents.
+    Each join field, has_child or has_parent query adds a significant tax to the query performance.
+    Here we add a join_field to the datasource with key 'join_field' and its name
+    https://www.elastic.co/guide/en/elasticsearch/reference/6.0/parent-join.html
+    """
+    index_name = 'library'
+    version_2x = False
+
+    domain = {
+        'library': {
+            'schema': {
+                'name': {'type': 'text'},
+                'introduction': {'type': 'text'},
+                'join_field':  {
+                    'type':'join',
+                    'relations': { 'library': 'book'}
+                    }
+            },
+            'datasource': {
+                'backend': 'elastic',
+                'join_field':'join_field'
+            }
+        }
+    }
+
+    def setUp(self):
+        settings = {
+            'DOMAIN': self.domain,
+            'ELASTICSEARCH_URL': 'http://localhost:9200',
+            'ELASTICSEARCH_SETTINGS': ELASTICSEARCH_SETTINGS
+        }
+
+        self.app = eve.Eve(settings=settings, data=Elastic)
+        with self.app.app_context():
+            self.app.data.init_index(self.app)
+            for resource in self.app.config['DOMAIN']:
+                self.app.data.remove(resource)
+
+            self.es = get_es(self.app.config.get('ELASTICSEARCH_URL'))
+            self.checkVersion()
+
+    def tearDown(self):
+        """ Cleanup all indeces after finished tests."""
+        with self.app.app_context():
+            for item in self.domain.items():
+                get_indices(self.es).delete(item[0], ignore=[400, 404])
+
+    def checkVersion(self):
+        with self.app.app_context():
+            info = self.es.info()
+            self.version_2x = info.get('version', {}).get('number', '').startswith('2')
+
+    def test_child_items_mapping(self):
+        """ Chceck if mapping for child items is done properly and adds a relations field.
+        refer to https://www.elastic.co/guide/en/elasticsearch/reference/current/parent-join.html
+        """
+        with self.app.app_context():
+            mapping = self.es.indices.get_mapping(index='library', doc_type='doc')
+
+            self.assertIn('library', mapping)
+            print(mapping)
+            self.assertDictEqual(mapping.get('library').get('mappings').get('doc').get('properties').get('join_field').get('relations'), {'library':'book'})
+            self.assertEqual(mapping.get('library').get('mappings').get('doc').get('properties').get('join_field').get('eager_global_ordinals'), True)
+
+    def test_insert_child_item(self):
+        with self.app.app_context():
+            self.app.data.insert(self.index_name, [{'_id': 'foo', 'name': 'library', 'introduction':'I am a the library', 'join_field': 'library'}])
+            self.app.data.insert(self.index_name, [{'_id': 'childfoo', 'name': 'book', 'introduction': 'I am a book1', 'join_field': {'name':'book', 'parent':'foo'}}
+            ])
+
+            parent = self.app.data.find_one(self.index_name, req=None, _id='foo')
+            self.assertEqual(parent['_id'], 'foo')
+            self.assertEqual(parent['name'], 'library')
+
+            child = self.app.data.find_one(self.index_name, req=None, _id='childfoo', parent='foo')
+            self.assertEqual(child['_id'], 'childfoo')
+            self.assertEqual(child['name'], 'book')
+            self.assertEqual(child['join_field']['parent'], 'foo')
+
+            # without parent
+            child = self.app.data.find_one(self.index_name, req=None, _id='childfoo')
+            self.assertEqual(child['_id'], 'childfoo')
+            self.assertEqual(child['name'], 'book')
+            self.assertEqual(child['join_field']['parent'], 'foo')
+
+    def test_insert_child_item_with_no_parent(self):
+        with self.app.app_context():
+            self.app.data.insert(self.index_name, [
+                {'_id': 'childfoo', 'name': 'childfoo', 'introduction': 'I am a book', 'join_field': {'name':'book', 'parent':'foo'} }
+            ])
+
+            child = self.app.data.find_one(self.index_name, req=None, _id='childfoo', parent='foo')
+            self.assertEqual(child['_id'], 'childfoo')
+            self.assertEqual(child['name'], 'childfoo')
+            self.assertEqual(child['join_field']['parent'], 'foo')
+
+    def test_update_child_item(self):
+        with self.app.app_context():
+            self.app.data.insert(self.index_name, [{'_id': 'foo_l_update', 'name': 'library', 'introduction':'I am a the library', 'join_field': 'library'}])
+            self.app.data.insert(self.index_name, [
+                {'_id': 'foo_b_update', 'name': 'book', 'introduction':'I am a book of the library', 'join_field': {'name':'book', 'parent':'foo_l_update'}}
+            ])
+
+            child = self.app.data.find_one(self.index_name, req=None, _id='foo_b_update', parent='foo_l_update')
+
+            self.assertEqual(child['_id'], 'foo_b_update')
+            self.assertEqual(child['name'], 'book')
+            self.assertEqual(child['introduction'], 'I am a book of the library')
+
+            self.app.data.update(self.index_name,
+                                 id_='foo_b_update',
+                                 updates={'_id': 'foo_b_update', 'name': 'test',
+                                           'introduction': 'test test'})
+
+            child = self.app.data.find_one(self.index_name, req=None, _id='foo_b_update', parent='foo_l_update')
+            self.assertEqual(child['_id'], 'foo_b_update')
+            self.assertEqual(child['name'], 'test')
+            self.assertEqual(child['introduction'], 'test test')
+
+    def test_bulk_insert_child_items(self):
+        """ basically the first line in a bulk insert is a representation of the request parameters that you would use in a single request
+        """
+        with self.app.app_context():
+            (count, _errors) = self.app.data.bulk_insert(self.index_name, [
+                {'_id': 'b1', 'name': 'foo', 'introduction': 'I am a the library', 'join_field': 'library', '_routing': 'b1'},
+                {'_id': 'u1', 'name': 'foo', 'introduction': 'I am a book1', 'join_field': {'name':'book', 'parent':'b1'}, '_routing': 'b1'},
+                {'_id': 'u2', 'name': 'foo', 'introduction': 'I am a book2', 'join_field': {'name':'book', 'parent':'b1'}, '_routing': 'b1'},
+                {'_id': 'u3', 'name': 'foo', 'introduction': 'I am a book3', 'join_field': {'name':'book', 'parent':'b1'}, '_routing': 'b1'},
+            ])
+            self.assertEquals(4, count)
+            self.assertEquals(0, len(_errors))
+
+    def test_replace_child_item(self):
+        """ checks if a child can be replaced and a new parent can be set,
+        replacing child items with no parents does not create execptions in parent_join relationships."""
+        with self.app.app_context():
+            res = self.app.data.insert(self.index_name, [{'_id': 'replace_me', 'name': 'foo', 'introduction': 'I am a book1', 'join_field': {'name':'book', 'parent':'replace_me_l'}}])
+            self.assertEqual(1, len(res))
+            new_item ={'_id': 'replace_me', 'name': 'bar', 'introduction': 'I am a book1', 'join_field': {'name':'book', 'parent':'b1'}}
+            res = self.app.data.replace(self.index_name, 'replace_me', new_item)
+            self.assertEqual(2, res['_version'])
+
+    def test_parent_child_query(self):
+        with self.app.app_context():
+            self.app.data.insert(self.index_name, [
+                {'_id': 'foo', 'name': 'foo', 'headline': 'test', 'introduction': 'I am a library1', 'join_field': 'library'},
+                {'_id': 'bar', 'name': 'bar', 'headline': 'test', 'introduction': 'I am a library2', 'join_field': 'library'}
+            ])
+            self.app.data.insert(self.index_name, [
+                {'_id': 'child1', 'name': 'child1', 'item_id': 'foo', 'introduction': 'I am a book of library1', 'join_field': {'name':'book', 'parent':'foo'}},
+                {'_id': 'child2', 'name': 'child2', 'item_id': 'bar', 'introduction': 'I am a book of library2', 'join_field': {'name':'book', 'parent':'bar'}}
+            ])
+
+            query = {
+                'query': {
+                    'bool': {
+                        'must': {
+                            'has_child': {
+                                'type': 'book',
+                                'query': {
+                                    'match': {'name': 'child1'}
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            req = ParsedRequest()
+            req.args = {'source': json.dumps(query)}
+            results = self.app.data.find(self.index_name, req, None)
+            self.assertEqual(1, results.count())
+            self.assertEqual(results[0].get('_id'), 'foo')
+            self.assertEqual(results[0].get('introduction'), 'I am a library1')
+
+    def test_remove_child(self):
+        with self.app.app_context():
+            self.app.data.insert(self.index_name, [{'_id': 'foo', 'name': 'foo', 'headline': 'test', 'introduction': 'I am a library1', 'join_field': 'library'}])
+            self.app.data.insert(self.index_name, [
+                {'_id': 'childfoo', 'name': 'child1', 'introduction': 'I am a book of library1', 'join_field': {'name':'book', 'parent':'foo'}}
+            ])
+            self.app.data.remove(self.index_name, {'_id': 'childfoo'}, 'foo')
+            child = self.app.data.find_one(self.index_name, req=None, _id='childfoo', parent='foo')
+            self.assertIsNone(child)

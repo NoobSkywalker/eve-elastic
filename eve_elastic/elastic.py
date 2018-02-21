@@ -661,7 +661,7 @@ class Elastic(DataLayer):
             _id = doc.pop('_id', None)
             res = self.elastic(resource).index(body=doc, id=_id, **kwargs)
             doc.setdefault('_id', res.get('_id', _id))
-            ids.append(ObjectId(doc.get('_id')))
+            ids.append(doc.get('_id'))
         self._refresh_resource_index(resource)
         return ids
 

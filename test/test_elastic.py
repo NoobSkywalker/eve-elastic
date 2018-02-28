@@ -195,7 +195,7 @@ class TestElastic(TestCase):
             elastic.put_mapping(self.app)
 
         mapping = elastic.get_mapping()
-        print(mapping)
+
         self.assertNotIn('published_items', mapping)
 
         items_mapping = mapping['items']['mappings']['doc']['properties']
@@ -669,7 +669,7 @@ class TestElastic(TestCase):
 class TestElasticSearchWithSettings(TestCase):
     """ As for ES 6.0 indeces cannot be created when fields are mapped that contain
     settings that do not exists yet. TODO: fix the way this is tested, are settings are now handled
-    per index. 
+    per index.
     """
     index_name = 'elastic_settings'
 
@@ -988,7 +988,8 @@ class TestElasticSearchParentChild(TestCase):
             self.assertIsNone(child)
 
 class TestElasticNestedObjectsAndSettings(TestCase):
-    """ https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html
+    """ Checks if a nested object is created and appropriate settings are used to create index.
+    https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html
     """
     index_name = 'harddrive'
 
@@ -1059,8 +1060,7 @@ class TestElasticNestedObjectsAndSettings(TestCase):
         with self.app.app_context():
             mapping = self.es.indices.get_mapping(index='harddrive', doc_type='doc')
             settings = self.es.indices.get_settings(index='harddrive')
-            print(settings.get(self.index_name).get('settings').get('index').get('analysis'))
-            print(mapping)
+
             self.assertIn(self.index_name, mapping)
             self.assertDictEqual(settings.get(self.index_name).get('settings').get('index').get('analysis').get('analyzer'), {"filename_index":{"filter":["lowercase","edge_ngram"],"tokenizer":"filename"}})
             self.assertEqual(mapping.get(self.index_name).get('mappings').get('doc').get('properties').get('files').get('type'), "nested")

@@ -119,3 +119,5 @@ Breaking Changes due to Elasticsearch 6.0 update
 A lot of stuff has been changed in the newest elasticsearch. One of the biggest changes is the removal of mapping types. Therefore eve-elastic has been
 restructured so that for every resource a seperate index is created as recommended. This removes the need of a standard INDEX settings and later on the doc_type
 will get obsolete as well.
+
+Settings and Mappings are now created per index and should be defined within the document mapping. See the TestElasticNestedObjectsAndSettings test case for an example.

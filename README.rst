@@ -110,7 +110,7 @@ For code quality checks you can runs
 .. code-block:: bash
 
     $ make checks
-    
+
 Which checks for linting etc.
 
 Breaking Changes due to Elasticsearch 6.0 update

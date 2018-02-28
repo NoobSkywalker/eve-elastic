@@ -231,7 +231,7 @@ class Elastic(DataLayer):
         for index, settings in elasticindexes.items():
             es = settings['resource']
             if not es.indices.exists(index):
-                self.create_index(index, dict([('mappings', settings.get('mappings'))]), es)
+                self.create_index(index, dict([('mappings', settings.get('mappings'))]), settings.get('settings'), es)
                 continue
             else:
                 self.put_settings(app, index, dict([('mappings', settings.get('mappings'))]).get('settings'), es)
@@ -256,16 +256,14 @@ class Elastic(DataLayer):
                             "doc": {
                             }
                         },
-                        'index_settings': {
+                        'settings': {
                         }
                     }
                 })
 
-                settings = self._resource_config(resource, 'SETTINGS')
-                if settings:
-                    indexes[index]['index_settings'].update(settings)
-
             resource_config = self.app.config['DOMAIN'][resource]
+            if 'settings' in resource_config:
+                indexes[index]['settings'].update(resource_config['settings'])
             properties = self._get_mapping_properties(resource_config)
             indexes[index]['mappings']['doc'] = properties
 
@@ -320,7 +318,7 @@ class Elastic(DataLayer):
         elif schema['type'] == 'keyword':
             return {'type': 'keyword', 'copy_to': 'all'}
 
-    def create_index(self, index=None, settings=None, es=None):
+    def create_index(self, index=None, mappings=None, settings=None, es=None):
         """Create new index and ignore if it exists already."""
         if index is None:
             index = self.index
@@ -331,14 +329,17 @@ class Elastic(DataLayer):
             alias = generate_index_name(index)
 
             args = {'index': index}
+            if mappings:
+                args['body'] = mappings
+
             if settings:
-                args['body'] = settings
+                args['body']['settings'] = settings
 
             es.indices.create(**args)
             es.indices.put_alias(index, alias)
             logger.info('created index alias=%s index=%s' % (alias, index))
-        except elasticsearch.TransportError:  # index exists
-            pass
+        except elasticsearch.TransportError as e:
+            logger.exception(e)
 
     def _get_elastic_resources(self):
         elastic_resources = {}
@@ -680,7 +681,7 @@ class Elastic(DataLayer):
         self._refresh_resource_index(resource)
         return res
 
-    def update(self, resource, id_, updates, original):
+    def update(self, resource, id_, updates, original=None):
         """Update document in index."""
         args = self._es_args(resource, refresh=True)
         if self._get_retry_on_conflict():
@@ -842,6 +843,7 @@ class Elastic(DataLayer):
         """Get config using resource elastic prefix (if any)."""
         px = self._resource_prefix(resource)
         return self.app.config.get('%s_%s' % (px, key), default)
+
 
     def elastic(self, resource=None):
         """Get ElasticSearch instance for given resource."""

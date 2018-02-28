@@ -195,7 +195,7 @@ class TestElastic(TestCase):
             elastic.put_mapping(self.app)
 
         mapping = elastic.get_mapping()
-        print(mapping)
+
         self.assertNotIn('published_items', mapping)
 
         items_mapping = mapping['items']['mappings']['doc']['properties']
@@ -666,7 +666,11 @@ class TestElastic(TestCase):
             self.app.data.elastic('items').update = original_method
 
 
-class TestElasticSearchParentChild(TestCase):
+class TestElasticSearchWithSettings(TestCase):
+    """ As for ES 6.0 indeces cannot be created when fields are mapped that contain
+    settings that do not exists yet. TODO: fix the way this is tested, are settings are now handled
+    per index.
+    """
     index_name = 'elastic_settings'
 
     def setUp(self):
@@ -708,7 +712,7 @@ class TestElasticSearchParentChild(TestCase):
     def tearDown(self):
         """ Cleanup index after finished tests."""
         with self.app.app_context():
-            get_indices(self.es).delete(self.index_name)
+            get_indices(self.es).delete('items')
 
     def test_elastic_settings(self):
         with self.app.app_context():
@@ -860,7 +864,6 @@ class TestElasticSearchParentChild(TestCase):
             mapping = self.es.indices.get_mapping(index='library', doc_type='doc')
 
             self.assertIn('library', mapping)
-            print(mapping)
             self.assertDictEqual(mapping.get('library').get('mappings').get('doc').get('properties').get('join_field').get('relations'), {'library':'book'})
             self.assertEqual(mapping.get('library').get('mappings').get('doc').get('properties').get('join_field').get('eager_global_ordinals'), True)
 
@@ -983,3 +986,81 @@ class TestElasticSearchParentChild(TestCase):
             self.app.data.remove(self.index_name, {'_id': 'childfoo'}, 'foo')
             child = self.app.data.find_one(self.index_name, req=None, _id='childfoo', parent='foo')
             self.assertIsNone(child)
+
+class TestElasticNestedObjectsAndSettings(TestCase):
+    """ Checks if a nested object is created and appropriate settings are used to create index.
+    https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html
+    """
+    index_name = 'harddrive'
+
+    domain = {
+        'harddrive': {
+            'schema': {
+                'files': {
+                'type': 'dict',
+                'mapping': {
+                    'type': 'nested',
+                    'properties': {
+                        'filename': {
+                            'type': 'text',
+                            'analyzer': 'filename_index',
+                        }
+                }
+            }
+        },
+            },
+            'datasource': {
+                'backend': 'elastic',
+            },
+            'settings' : {
+                'analysis': {
+                    'analyzer': {
+                        "filename_index": {
+                            "tokenizer": "filename",
+                            "filter": ["lowercase", "edge_ngram"]
+                        }
+                    },
+                    "tokenizer": {
+                        "filename": {
+                            "pattern": "[^\\p{L}\\d]+",
+                            "type": "pattern"
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+
+
+    def setUp(self):
+        settings = {
+            'DOMAIN': self.domain,
+            'ELASTICSEARCH_URL': 'http://localhost:9200',
+        }
+
+        self.app = eve.Eve(settings=settings, data=Elastic)
+        with self.app.app_context():
+            self.app.data.init_index(self.app)
+            for resource in self.app.config['DOMAIN']:
+                self.app.data.remove(resource)
+
+            self.es = get_es(self.app.config.get('ELASTICSEARCH_URL'))
+
+    def tearDown(self):
+        """ Cleanup all indeces after finished tests."""
+        with self.app.app_context():
+            for item in self.domain.items():
+                get_indices(self.es).delete(item[0], ignore=[400, 404])
+
+    def test_nested_items_mapping(self):
+        """ Check if mapping for child items is done properly and adds a relations field.
+        refer to https://www.elastic.co/guide/en/elasticsearch/reference/current/parent-join.html
+        """
+        with self.app.app_context():
+            mapping = self.es.indices.get_mapping(index='harddrive', doc_type='doc')
+            settings = self.es.indices.get_settings(index='harddrive')
+
+            self.assertIn(self.index_name, mapping)
+            self.assertDictEqual(settings.get(self.index_name).get('settings').get('index').get('analysis').get('analyzer'), {"filename_index":{"filter":["lowercase","edge_ngram"],"tokenizer":"filename"}})
+            self.assertEqual(mapping.get(self.index_name).get('mappings').get('doc').get('properties').get('files').get('type'), "nested")

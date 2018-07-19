@@ -14,7 +14,7 @@ VIRTUAL_ENV ?= $(WORKON_HOME)/$(PKG_NAME)
 
 pyenv = $(VIRTUAL_ENV)
 pylama = $(pyenv)/bin/pylama
-nose = /usr/bin/nosetests
+nose = $(pyenv)/bin/nosetests
 py_namespace = eve_elastic
 
 $(info using python environment: $(pyenv))
@@ -25,7 +25,7 @@ SITE_PACKAGES = $(pyenv)/lib/$(PY_VERSION)/site-packages)
 
 # python binaries which are located in the package virtualenv
 # python command to use
-python = $(pyenv)/bin/python
+python = $(pyenv)/bin/python3
 
 python_build = $(python_build_environment) $(python)
 pip = $(python_build_environment) $(pyenv)/bin/pip
@@ -35,15 +35,18 @@ virtualenv = virtualenv -p `which $(PY_VERSION)` -q --clear
 
 python_files = $(shell find eve_elastic -name \*.py)
 
+
+install_dev:
+	# install dependencies if you do not have them (python3.5)
+	sudo apt-get -y install python3.5 python-dev
+	sudo pip3 install virtualenv
+
+
 install: $(python_files) setup.py | $(pyenv)
-	# install package, dependencies are handled by $(pyenv) target
-	$(pip) install --no-deps --upgrade .
 
 # Testing
 pytest: install cleantestpycache
 	# run project unit tests
-	$(pip) install --no-deps --upgrade
-
 	$(python) $(nose) -x --verbosity=2 test/test_elastic.py
 
 $(pyenv): requirements.txt

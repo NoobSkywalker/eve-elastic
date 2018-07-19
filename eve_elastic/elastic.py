@@ -218,6 +218,11 @@ class Elastic(DataLayer):
         # domain items now need to create an index for each document type
         # therefore on init we set create the index relations by providing a value in resource
         app.config.setdefault('ELASTICSEARCH_INDEXES', {})
+
+        # possibility to add an Index prefix which then creates and queries the index with a prefix.
+        # This helps to prevent issues on index names with other applications using the same elastic cluster
+        app.config.setdefault('ELASTICSEARCH_INDEX_PREFIX', '')
+
         app.config.setdefault('ELASTICSEARCH_FORCE_REFRESH', True)
         app.config.setdefault('ELASTICSEARCH_AUTO_AGGREGATIONS', True)
 
@@ -230,12 +235,13 @@ class Elastic(DataLayer):
 
         for index, settings in elasticindexes.items():
             es = settings['resource']
+            # check if there is a prefix and add it to the index creation.
+            epx_index = self._get_index_prefix(index)
             if not es.indices.exists(index):
                 self.create_index(index, dict([('mappings', settings.get('mappings'))]), settings.get('settings'), es)
                 continue
             else:
                 self.put_settings(app, index, dict([('mappings', settings.get('mappings'))]).get('settings'), es)
-
         return
 
     def _get_indexes(self):
@@ -425,7 +431,8 @@ class Elastic(DataLayer):
 
         :param index: index name
         """
-        mapping = self.es.indices.get_mapping(index=index, doc_type=doc_type)
+
+        mapping = self.es.indices.get_mapping(index=self._get_index_prefix(index), doc_type=doc_type)
         if index is None:
             return mapping
         return next(iter(mapping.values()))
@@ -435,6 +442,8 @@ class Elastic(DataLayer):
 
         :param index: index name
         """
+        index = self._get_index_prefix(index)
+
         settings = self.es.indices.get_settings(index=index)
         return next(iter(settings.values()))
 
@@ -593,12 +602,13 @@ class Elastic(DataLayer):
             return self._find_by_id(resource=resource, _id=lookup[config.ID_FIELD], parent=lookup.get('parent'))
         else:
             args = self._es_args(resource)
+
             filters = [{'term': {key: val}} for key, val in lookup.items()]
             query = {'query': {'bool': {'filter': filters}}}
 
             try:
                 args['size'] = 1
-                hits = self.elastic(resource).search(body=query, **args)
+                hits = self.elastic(self._get_index_prefix(resource)).search(body=query, **args)
                 docs = self._parse_hits(hits, resource)
                 return docs.first()
             except elasticsearch.NotFoundError:
@@ -686,7 +696,6 @@ class Elastic(DataLayer):
         args = self._es_args(resource, refresh=True)
         if self._get_retry_on_conflict():
             args['retry_on_conflict'] = self._get_retry_on_conflict()
-
         updates.pop('_id', None)
         updates.pop('_type', None)
         self._update_parent_join_args(args, updates)
@@ -710,7 +719,6 @@ class Elastic(DataLayer):
         kwargs.update(self._es_args(resource))
         if parent:
             kwargs['parent'] = parent
-
         if lookup:
             if lookup.get('_id'):
                 try:
@@ -724,6 +732,7 @@ class Elastic(DataLayer):
 
         :param resource: resource name
         """
+        resource = self._get_index_prefix(resource)
         args = self._es_args(resource)
         res = self.elastic(resource).count(body={'query': {'match_all': {}}}, **args)
         return res.get('count', 0) == 0
@@ -818,7 +827,7 @@ class Elastic(DataLayer):
         """
         datasource = self.get_datasource(resource)
         indexes = self._resource_config(resource, 'INDEXES') or {}
-        default_index = resource
+        default_index = self._get_index_prefix(resource)
         return indexes.get(datasource[0], default_index)
 
     def _refresh_resource_index(self, resource):
@@ -843,6 +852,22 @@ class Elastic(DataLayer):
         """Get config using resource elastic prefix (if any)."""
         px = self._resource_prefix(resource)
         return self.app.config.get('%s_%s' % (px, key), default)
+
+    def _get_index_prefix(self, index=None):
+        """Get prefix that should be added to each index.
+
+        This allows to save indexes with a seperate prefix in elasticsearch,
+        however entry point and request stay the same. So the name of index is
+        different in elasticsearch itself and the layer handles the querying for
+        the right index.
+
+        """
+
+        if index and self.app.config['ELASTICSEARCH_INDEX_PREFIX']:
+            prefixed_index = self.app.config['ELASTICSEARCH_INDEX_PREFIX'] + index
+            return prefixed_index
+        else:
+            return index
 
 
     def elastic(self, resource=None):

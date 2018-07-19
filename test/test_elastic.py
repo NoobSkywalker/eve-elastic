@@ -668,7 +668,7 @@ class TestElastic(TestCase):
 
 class TestElasticSearchWithSettings(TestCase):
     """ As for ES 6.0 indeces cannot be created when fields are mapped that contain
-    settings that do not exists yet. TODO: fix the way this is tested, are settings are now handled
+    settings that do not exists yet. TODO: fix the way this is tested, as settings are now handled
     per index.
     """
     index_name = 'elastic_settings'
@@ -694,11 +694,23 @@ class TestElasticSearchWithSettings(TestCase):
                     },
                     'datasource': {
                         'backend': 'elastic'
+                    },
+                    'settings': {
+                        # custom analyzers
+                        # java patterns http://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
+                        'analysis': {
+                            'analyzer': {
+                                "phrase_prefix_analyzer": {
+                                    'type': 'custom',
+                                    'tokenizer': 'keyword',
+                                    'filter': ['lowercase']
+                                },
+                            },
+                        }
                     }
                 }
             },
-            'ELASTICSEARCH_URL': 'http://localhost:9200',
-            'ELASTICSEARCH_SETTINGS': ELASTICSEARCH_SETTINGS
+            'ELASTICSEARCH_URL': 'http://localhost:9200'
         }
 
         self.app = eve.Eve(settings=settings, data=Elastic)
@@ -716,8 +728,9 @@ class TestElasticSearchWithSettings(TestCase):
 
     def test_elastic_settings(self):
         with self.app.app_context():
-            settings = self.app.data.get_settings(self.index_name)
+            settings = self.app.data.get_settings('items')
             analyzer = settings['settings']['index']['analysis']['analyzer']
+            print(analyzer)
             self.assertDictEqual({
                 'phrase_prefix_analyzer': {
                     'tokenizer': 'keyword',
@@ -728,7 +741,7 @@ class TestElasticSearchWithSettings(TestCase):
 
     def test_put_settings(self):
         with self.app.app_context():
-            settings = self.app.data.get_settings(self.index_name)
+            settings = self.app.data.get_settings('items')
             analyzer = settings['settings']['index']['analysis']['analyzer']
             self.assertDictEqual({
                 'phrase_prefix_analyzer': {
@@ -746,8 +759,8 @@ class TestElasticSearchWithSettings(TestCase):
                 'filter': ['uppercase']
             }
 
-            self.app.data.put_settings(self.app, self.index_name, new_settings)
-            settings = self.app.data.get_settings(self.index_name)
+            self.app.data.put_settings(self.app, 'items', new_settings)
+            settings = self.app.data.get_settings('items')
             analyzer = settings['settings']['index']['analysis']['analyzer']
             self.assertDictEqual({
                 'phrase_prefix_analyzer': {
@@ -857,7 +870,7 @@ class TestElasticSearchParentChild(TestCase):
             self.version_2x = info.get('version', {}).get('number', '').startswith('2')
 
     def test_child_items_mapping(self):
-        """ Chceck if mapping for child items is done properly and adds a relations field.
+        """ Check if mapping for child items is done properly and adds a relations field.
         refer to https://www.elastic.co/guide/en/elasticsearch/reference/current/parent-join.html
         """
         with self.app.app_context():
@@ -991,10 +1004,10 @@ class TestElasticNestedObjectsAndSettings(TestCase):
     """ Checks if a nested object is created and appropriate settings are used to create index.
     https://www.elastic.co/guide/en/elasticsearch/reference/current/nested.html
     """
-    index_name = 'harddrive'
+    index_name = 'filesystem'
 
     domain = {
-        'harddrive': {
+        'filesystem': {
             'schema': {
                 'files': {
                 'type': 'dict',
@@ -1031,8 +1044,6 @@ class TestElasticNestedObjectsAndSettings(TestCase):
         }
     }
 
-
-
     def setUp(self):
         settings = {
             'DOMAIN': self.domain,
@@ -1058,9 +1069,103 @@ class TestElasticNestedObjectsAndSettings(TestCase):
         refer to https://www.elastic.co/guide/en/elasticsearch/reference/current/parent-join.html
         """
         with self.app.app_context():
-            mapping = self.es.indices.get_mapping(index='harddrive', doc_type='doc')
-            settings = self.es.indices.get_settings(index='harddrive')
+            mapping = self.es.indices.get_mapping(index='filesystem', doc_type='doc')
+            settings = self.es.indices.get_settings(index='filesystem')
 
             self.assertIn(self.index_name, mapping)
             self.assertDictEqual(settings.get(self.index_name).get('settings').get('index').get('analysis').get('analyzer'), {"filename_index":{"filter":["lowercase","edge_ngram"],"tokenizer":"filename"}})
             self.assertEqual(mapping.get(self.index_name).get('mappings').get('doc').get('properties').get('files').get('type'), "nested")
+
+
+class TestElasticPrefix(TestCase):
+    """ Checks if proper indeces are queried and created when a prefix for indeces is used.
+    """
+    index_name = 'persons'
+
+    domain = {
+        'persons': {
+            'schema': {
+                'name': {'type': 'text'},
+                'age': {'type': 'integer'}
+
+            },
+
+            'datasource': {
+                'backend': 'elastic',
+            }
+        }
+    }
+
+    def setUp(self):
+        settings = {
+            'DOMAIN': self.domain,
+            'ELASTICSEARCH_URL': 'http://localhost:9200',
+            'ELASTICSEARCH_INDEX_PREFIX':'example_',
+        }
+
+        self.app = eve.Eve(settings=settings, data=Elastic)
+        with self.app.app_context():
+            self.app.data.init_index(self.app)
+            for resource in self.app.config['DOMAIN']:
+                self.app.data.remove(resource)
+
+            self.es = get_es(self.app.config.get('ELASTICSEARCH_URL'))
+
+    def tearDown(self):
+        """ Cleanup all indeces after finished tests."""
+        with self.app.app_context():
+            for item in self.domain.items():
+                get_indices(self.es).delete(self.app.config.get('ELASTICSEARCH_INDEX_PREFIX') + item[0], ignore=[400, 404])
+
+    def test_prefix_setting_mapping(self):
+        """ Check if a prefix is added to indeces and settings and mappings can be found """
+        with self.app.app_context():
+            mapping = self.app.data.get_mapping(index='persons', doc_type='doc')
+            settings = self.app.data.get_settings(index='persons')
+
+            self.assertIn("name", mapping['mappings']['doc']['properties'])
+            indices = get_indices(self.es)
+            self.assertIn("example_persons", indices.get('*'))
+
+
+    def test_prefix_search_via_source_param(self):
+        query = {'query': {'term': {'name': 'karl'}}}
+        with self.app.app_context():
+            self.app.data.insert('persons', [{'name':'Karl'}])
+            self.app.data.insert('persons', [{'name':'Peter'}])
+            req = ParsedRequest()
+            req.args = {'source': json.dumps(query)}
+            res = self.app.data.find('persons', req, None)
+            self.assertEqual(1, res.count())
+
+    def test_prefix_find_one_by_id(self):
+        """elastic 1.0+ is using 'found' property instead of 'exists'"""
+        with self.app.app_context():
+            self.app.data.insert('persons', [{'name': 'test', config.ID_FIELD: 'testid'}])
+            item = self.app.data.find_one('persons', req=None, **{config.ID_FIELD: 'testid'})
+            self.assertEqual('testid', item[config.ID_FIELD])
+
+    def test_prefix_find_one_raw(self):
+        with self.app.app_context():
+            ids = self.app.data.insert('persons', [{'name': 'karl', 'age': 3}])
+            item = self.app.data.find_one_raw('persons', ids[0])
+            self.assertEqual(item['age'], 3)
+
+    def test_prefix_put(self):
+        with self.app.app_context():
+            self.app.data.replace('persons', 'newid', {'name': 'Karl', '_id': 'newid', '_type': 'x'})
+            self.assertEqual('Karl', self.app.data.find_one('persons', None, _id='newid')['name'])
+
+    def test_prefix_update(self):
+        with self.app.app_context():
+            ids = self.app.data.insert('persons', [{'name': 'Karl'}])
+            self.app.data.update('persons', ids[0], {'name': 'Steven', '_id': ids[0], '_type': 'persons'})
+            self.assertEqual(self.app.data.find_one('persons', req=None, _id=ids[0])['name'], 'Steven')
+
+    def test_prefix_remove_by_id(self):
+        with self.app.app_context():
+            self.ids = self.app.data.insert('persons', [{'name': 'Karl'}, {'name': 'Steven'}])
+            self.app.data.remove('persons', {'_id': self.ids[0]})
+            req = ParsedRequest()
+            req.args = {}
+            self.assertEqual(1, self.app.data.find('persons', req, None).count())

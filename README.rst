@@ -22,8 +22,7 @@ Eve-Elastic is `GPLv3 <http://www.gnu.org/licenses/gpl-3.0.txt>`_ licensed.
 Supported elastic versions
 --------------------------
 
-It supports ``1.7`` and ``2.x`` versions. If you limit your queries to those which work
-with both you can have single codebase for both.
+It supports elasticsearch versions > 6.0.
 
 
 Install
@@ -50,7 +49,7 @@ Config
 There are 2 options for Eve-Elastic taken from ``app.config``:
 
 - ``ELASTICSEARCH_URL`` (default: ``'http://localhost:9200/'``) - this can be either single url or list of urls
-- ``ELASTICSEARCH_INDEX`` - (default: ``'eve'``)
+- ``ELASTICSEARCH_INDEX_PREFIX`` - (default: ``''``) - this allows to store indeces with a different index name but keep the query endpoints the same
 - ``ELASTICSEARCH_INDEXES`` - (default: ``{}``) - ``resource`` to ``index`` mapping
 - ``ELASTICSEARCH_FORCE_REFRESH`` - (default: ``True``) - force index refresh after every modification
 - ``ELASTICSEARCH_AUTO_AGGREGATIONS`` - (default: ``True``) - return aggregates on every search if configured for resource

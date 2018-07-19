@@ -1,3 +1,4 @@
+setuptools
 nose
 flake8
 mock
@@ -6,5 +7,5 @@ eve
 ElasticSearch
 pytz
 pylama
-ciso8601
+ciso8601<=1.0.8
 arrow

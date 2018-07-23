@@ -1169,3 +1169,32 @@ class TestElasticPrefix(TestCase):
             req = ParsedRequest()
             req.args = {}
             self.assertEqual(1, self.app.data.find('persons', req, None).count())
+
+    def test_prefix_basic_search_query(self):
+        with self.app.app_context():
+            self.app.data.insert('persons', [
+                {'name': 'Karl'},
+                {'name': 'Steven'}
+            ])
+
+        with self.app.test_request_context('/persons/?q=Karl'):
+            req = parse_request('persons')
+            cursor = self.app.data.find('persons', req, None)
+            self.assertEquals(1, cursor.count())
+
+    def test_prefix_phrase_search_query(self):
+        with self.app.app_context():
+            self.app.data.insert('persons', [
+                {'name': 'Karl Heinz'},
+                {'name': 'Hans Peter'}
+            ])
+
+        with self.app.test_request_context('/persons/?q="Karl Heinz"'):
+            req = parse_request('persons')
+            cursor = self.app.data.find('persons', req, None)
+            self.assertEquals(1, cursor.count())
+
+        with self.app.test_request_context('/persons/?q="Heinz Karl"'):
+            req = parse_request('persons')
+            cursor = self.app.data.find('persons', req, None)
+            self.assertEquals(0, cursor.count())

@@ -235,9 +235,7 @@ class Elastic(DataLayer):
 
         for index, settings in elasticindexes.items():
             es = settings['resource']
-            # check if there is a prefix and add it to the index creation.
-            epx_index = self._get_index_prefix(index)
-            if not es.indices.exists(epx_index):
+            if not es.indices.exists(index):
                 self.create_index(index, dict([('mappings', settings.get('mappings'))]), settings.get('settings'), es)
                 continue
             else:

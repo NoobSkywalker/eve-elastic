@@ -842,6 +842,8 @@ class Elastic(DataLayer):
         Resource can specify ``elastic_prefix`` which behaves same like ``mongo_prefix``.
         """
         px = 'ELASTICSEARCH'
+        if self.app.config['ELASTICSEARCH_INDEX_PREFIX']:
+            resource = resource.replace(self.app.config['ELASTICSEARCH_INDEX_PREFIX'],'')
         if resource and config.DOMAIN[resource].get('elastic_prefix'):
             px = config.DOMAIN[resource].get('elastic_prefix')
         return px

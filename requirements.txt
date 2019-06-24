@@ -4,7 +4,7 @@ flake8
 mock
 nose
 eve
-ElasticSearch
+ElasticSearch<=6.4.0
 pytz
 pylama
 ciso8601<=1.0.8

@@ -27,7 +27,7 @@ setup(
         'arrow>=0.4.2',
         'ciso8601>=1.0.2',
         'pytz>=2015.4',
-        'ElasticSearch>=6.0.0',
+        'ElasticSearch>=6.0.0, <=6.4.0',
         'Eve>=0.4',
     ],
     classifiers=[
